@@ -3,6 +3,41 @@ import math
 import pytest
 
 
+# ---------- / (루트 소개 페이지) ----------
+
+def test_root_returns_html_and_status_200(client):
+    """/ 는 200 과 HTML 응답(text/html)을 돌려준다."""
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "text/html" in res.headers.get("content-type", "")
+
+
+def test_root_contains_key_service_info(client):
+    """/ 응답 본문은 서비스 제목과 주요 엔드포인트(/eta, /health, /docs)를 포함한다."""
+    res = client.get("/")
+    assert res.status_code == 200
+    content = res.text
+    assert "배달 예상 시간(ETA) API" in content
+    assert "/health" in content
+    assert "/eta" in content
+    assert "/docs" in content
+    assert "/redoc" in content
+
+
+def test_root_contains_current_model(client):
+    """/ 응답 본문은 현재 활성화된 모델 구현체 이름을 포함한다."""
+    health_model = client.get("/health").json()["model"]
+    res = client.get("/")
+    assert res.status_code == 200
+    assert health_model in res.text
+
+
+def test_root_post_method_not_allowed(client):
+    """/ 는 GET 전용이며 POST 는 405 를 돌려준다."""
+    res = client.post("/")
+    assert res.status_code == 405
+
+
 # ---------- /health ----------
 
 def test_health_returns_ok_and_model(client):
