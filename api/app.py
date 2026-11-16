@@ -155,6 +155,11 @@ def get_intro_html(model_name: str) -> str:
       font-size: 0.85rem;
       margin-top: 2rem;
     }}
+    footer .links {{
+      justify-content: center;
+      margin-top: 0;
+      margin-bottom: 1rem;
+    }}
   </style>
 </head>
 <body>
@@ -167,10 +172,6 @@ def get_intro_html(model_name: str) -> str:
     <div class="card">
       <h2 class="card-title">서비스 개요</h2>
       <p>현재 적용된 예측 모델 구현체: <code>{model_name}</code></p>
-      <div class="links">
-        <a class="btn" href="/docs">Swagger API 문서 (/docs)</a>
-        <a class="btn btn-secondary" href="/redoc">ReDoc 문서 (/redoc)</a>
-      </div>
     </div>
 
     <div class="card">
@@ -208,6 +209,10 @@ def get_intro_html(model_name: str) -> str:
     </div>
 
     <footer>
+      <div class="links">
+        <a class="btn" href="/docs">Swagger API 문서 (/docs)</a>
+        <a class="btn btn-secondary" href="/redoc">ReDoc 문서 (/redoc)</a>
+      </div>
       <p>&copy; 2026 ETA Service. All rights reserved.</p>
     </footer>
   </div>
