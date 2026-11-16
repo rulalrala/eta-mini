@@ -6,32 +6,33 @@
 
 import logging
 import sys
-import joblib
 import numpy as np
 import onnxruntime as ort
 import torch
 from onnx import ModelProto
 from skl2onnx import to_onnx
-from api.predictors.dl import build_model
+from api.predictors import dl as dl_predictor
+from api.predictors import sklearn as sk_predictor
+from api.predictors.paths import model_path
+
+# 서빙과 같은 로더로 원본 모델을 읽는다 (경로·map_location·eval 처리를 한 곳에서)
+sk_model = sk_predictor.load_model()
+dl_model = dl_predictor.load_model()
 
 # scikit-learn → ONNX (make_pipeline 이라 정규화 포함)
-sk_model = joblib.load("artifacts/sklearn.joblib")
 probe = np.array([[3, 2], [0, 0], [7.5, 10], [1.2, 4]], dtype=np.float32)
 onx = to_onnx(sk_model, probe[:1])                     # sklearn: 정규화 포함
 assert isinstance(onx, ModelProto)                     # 변환 결과가 ONNX 모델인지 확인
 
-with open("artifacts/model_sklearn.onnx", "wb") as f:
+with open(model_path("model_sklearn.onnx"), "wb") as f:
     f.write(onx.SerializeToString())
 
 # 새 변환기가 내는 "torchvision is not installed" 경고는 이 모델과 무관하므로 숨긴다
 logging.getLogger("torch.onnx").setLevel(logging.ERROR)
 
 # PyTorch → ONNX (WithNormalize 라 정규화 포함)
-dl_model = build_model()
-dl_model.load_state_dict(torch.load("artifacts/dl.pt"))
-dl_model.eval()
 # PyTorch 2.9부터 기본이 된 `torch.export` 기반 변환기를 쓴다. 이 변환기가 `onnxscript`를 쓴다.
-torch.onnx.export(dl_model, (torch.zeros(1, 2),), "artifacts/model_dl.onnx",
+torch.onnx.export(dl_model, (torch.zeros(1, 2),), model_path("model_dl.onnx"),
                   input_names=["X"], output_names=["variable"],
                   dynamic_shapes=({0: torch.export.Dim("batch")},), external_data=False, verbose=False)
 
@@ -41,7 +42,7 @@ with torch.no_grad():
                  "model_dl.onnx": dl_model(torch.tensor(probe)).squeeze(1).numpy()}
 ok = True
 for fname, want in originals.items():
-    sess = ort.InferenceSession(f"artifacts/{fname}")
+    sess = ort.InferenceSession(model_path(fname))
     got = np.asarray(sess.run(["variable"], {"X": probe})[0]).ravel()
     diff = float(np.abs(got - want).max())
     ok &= diff < 1e-4
