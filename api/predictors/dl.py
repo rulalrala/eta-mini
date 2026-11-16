@@ -64,3 +64,4 @@ def estimate_delivery_minutes(distance_km: float, pending_orders: int) -> float:
     with torch.no_grad():
         x = torch.tensor([[distance_km, pending_orders]], dtype=torch.float32)
         return float(load_model()(x)[0, 0])
+
