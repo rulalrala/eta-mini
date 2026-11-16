@@ -10,6 +10,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"mime"
@@ -102,9 +103,10 @@ func parseDistance(fields map[string]any, name string, body []byte) (float64, *v
 	var v float64
 	switch x := value.(type) {
 	case json.Number:
-		f, err := x.Float64()
-		if err != nil { // 1e309 처럼 float64 범위를 넘으면 무한대 → pydantic 과 같이 finite_number
-			return 0, &validationError{Type: "finite_number", Loc: loc, Msg: "Input should be a finite number", Input: in}
+		// 1e309 처럼 float64 범위를 넘으면 ±Inf 와 ErrRange → 아래 finite_number 검사에 걸린다
+		f, err := strconv.ParseFloat(x.String(), 64)
+		if err != nil && !math.IsInf(f, 0) && f != 0 {
+			return 0, &validationError{Type: "float_parsing", Loc: loc, Msg: "Input should be a valid number", Input: in}
 		}
 		v = f
 	case bool:
@@ -119,8 +121,8 @@ func parseDistance(fields map[string]any, name string, body []byte) (float64, *v
 		return 0, &validationError{Type: "float_type", Loc: loc, Msg: "Input should be a valid number", Input: in}
 	}
 	switch {
-	case math.IsInf(v, 0) || math.IsNaN(v): // "inf", "nan" 문자열 등
-		return 0, &validationError{Type: "finite_number", Loc: loc, Msg: "Input should be a finite number", Input: in}
+	case math.IsInf(v, 0) || math.IsNaN(v): // "inf", "nan" 문자열 등. input 은 pydantic 처럼 "inf"/"-inf"/"nan"
+		return 0, &validationError{Type: "finite_number", Loc: loc, Msg: "Input should be a finite number", Input: mustMarshal(floatRepr(v))}
 	case v < 0:
 		return 0, &validationError{Type: "greater_than_equal", Loc: loc, Msg: "Input should be greater than or equal to 0", Input: in, Ctx: map[string]any{"ge": 0.0}}
 	case v > maxDistanceKm:
@@ -153,8 +155,9 @@ func parsePendingOrders(fields map[string]any, name string, body []byte) (int64,
 	case bool:
 		v = int64(boolToFloat(x))
 	case string:
+		// int64 를 넘는 정수 문자열은 ParseInt 가 끝값과 ErrRange 를 돌려준다 → 아래 ge/le 검사에 걸린다 (pydantic 과 같음)
 		i, err := strconv.ParseInt(strings.TrimSpace(x), 10, 64)
-		if err != nil {
+		if err != nil && !errors.Is(err, strconv.ErrRange) {
 			return 0, &validationError{Type: "int_parsing", Loc: loc, Msg: "Input should be a valid integer, unable to parse string as an integer", Input: in}
 		}
 		v = i
@@ -168,6 +171,18 @@ func parsePendingOrders(fields map[string]any, name string, body []byte) (int64,
 		return 0, &validationError{Type: "less_than_equal", Loc: loc, Msg: "Input should be less than or equal to 1000000", Input: in, Ctx: map[string]any{"le": maxPendingOrders}}
 	}
 	return v, nil
+}
+
+// floatRepr 는 무한대·NaN 을 Python 의 str(float) 과 같은 문자열로 바꾼다.
+func floatRepr(v float64) string {
+	switch {
+	case math.IsNaN(v):
+		return "nan"
+	case math.IsInf(v, 1):
+		return "inf"
+	default:
+		return "-inf"
+	}
 }
 
 func jsonInvalid() validationError {

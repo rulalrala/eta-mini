@@ -5,6 +5,7 @@
 //! pydantic 의 lax 모드와 같게 숫자 문자열("3.5"), true/false, 소수부가 0인 정수(3.0)는 받아들이고
 //! 모르는 필드는 무시한다.
 
+use std::num::IntErrorKind;
 use std::sync::Arc;
 
 use axum::{
@@ -102,9 +103,11 @@ fn parse_non_neg_float(
     };
     let err = |ty: &str, msg: &str| json!({"type": ty, "loc": ["body", name], "msg": msg, "input": input});
     let v = match input {
+        // 원래 숫자 문자열을 직접 파싱한다. 1e309 는 inf 가 되어 아래 finite_number 검사에 걸린다
         Value::Number(n) => n
-            .as_f64()
-            .ok_or_else(|| err("float_parsing", "Input should be a valid number"))?,
+            .to_string()
+            .parse::<f64>()
+            .map_err(|_| err("float_parsing", "Input should be a valid number"))?,
         Value::Bool(b) => f64::from(u8::from(*b)),
         Value::String(s) => s.trim().parse::<f64>().map_err(|_| {
             err(
@@ -115,8 +118,14 @@ fn parse_non_neg_float(
         _ => return Err(err("float_type", "Input should be a valid number")),
     };
     if !v.is_finite() {
-        // "inf", "nan" 문자열 등
-        return Err(err("finite_number", "Input should be a finite number"));
+        // "inf", "nan" 문자열, 1e309 등. input 은 pydantic 처럼 "inf"/"-inf"/"nan"
+        let mut e = err("finite_number", "Input should be a finite number");
+        e["input"] = json!(match v {
+            v if v.is_nan() => "nan",
+            v if v > 0.0 => "inf",
+            _ => "-inf",
+        });
+        return Err(e);
     }
     if v < 0.0 {
         let mut e = err(
@@ -157,12 +166,18 @@ fn parse_non_neg_int(fields: &Map<String, Value>, name: &str, body: &Value) -> R
             },
         },
         Value::Bool(b) => i64::from(*b),
-        Value::String(s) => s.trim().parse::<i64>().map_err(|_| {
-            err(
-                "int_parsing",
-                "Input should be a valid integer, unable to parse string as an integer",
-            )
-        })?,
+        // i64 를 넘는 정수 문자열은 끝값으로 포화시켜 아래 ge/le 검사에 걸리게 한다 (pydantic 과 같음)
+        Value::String(s) => match s.trim().parse::<i64>() {
+            Ok(i) => i,
+            Err(e) if *e.kind() == IntErrorKind::PosOverflow => i64::MAX,
+            Err(e) if *e.kind() == IntErrorKind::NegOverflow => i64::MIN,
+            Err(_) => {
+                return Err(err(
+                    "int_parsing",
+                    "Input should be a valid integer, unable to parse string as an integer",
+                ));
+            }
+        },
         _ => return Err(err("int_type", "Input should be a valid integer")),
     };
     if v < 0 {
@@ -390,6 +405,46 @@ mod tests {
                 })
                 .collect();
             assert_eq!(locs, want, "{body}: {got}");
+        }
+    }
+
+    /// 범위 밖 값은 api/app.py(pydantic) 와 같은 type·input 으로 거부한다.
+    #[tokio::test]
+    async fn eta_422_type_matches_pydantic() {
+        let cases = [
+            (
+                r#"{"distance_km": 1e309, "pending_orders": 0}"#,
+                "finite_number",
+                json!("inf"),
+            ),
+            (
+                r#"{"distance_km": -1e309, "pending_orders": 0}"#,
+                "finite_number",
+                json!("-inf"),
+            ),
+            (
+                r#"{"distance_km": "nan", "pending_orders": 0}"#,
+                "finite_number",
+                json!("nan"),
+            ),
+            (
+                r#"{"distance_km": 1, "pending_orders": "99999999999999999999"}"#,
+                "less_than_equal",
+                json!("99999999999999999999"),
+            ),
+            (
+                r#"{"distance_km": 1, "pending_orders": "-99999999999999999999"}"#,
+                "greater_than_equal",
+                json!("-99999999999999999999"),
+            ),
+        ];
+        for (body, want_type, want_input) in cases {
+            let (status, got) = post_json(body).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            let detail = got["detail"].as_array().unwrap();
+            assert_eq!(detail.len(), 1, "{body}: {got}");
+            assert_eq!(detail[0]["type"], want_type, "{body}: {got}");
+            assert_eq!(detail[0]["input"], want_input, "{body}: {got}");
         }
     }
 

@@ -50,7 +50,7 @@ func TestEtaKnownValues(t *testing.T) {
 		{`{"distance_km": "3.5", "pending_orders": 0}`, 20.5},       // 숫자 문자열 (pydantic lax)
 		{`{"distance_km": 1, "pending_orders": 3.0}`, 19},           // 소수부 0 인 정수
 		{`{"distance_km": 1, "pending_orders": "3"}`, 19},
-		{`{"distance_km": 1, "pending_orders": 0, "extra": 1}`, 13}, // 모르는 필드는 무시
+		{`{"distance_km": 1, "pending_orders": 0, "extra": 1}`, 13},      // 모르는 필드는 무시
 		{`{"distance_km": 1000000, "pending_orders": 1000000}`, 5000010}, // 상한값 자체는 허용
 	}
 	for _, c := range cases {
@@ -80,14 +80,14 @@ func TestEtaInvalidReturns422(t *testing.T) {
 		{`{"distance_km": 1.0}`, "application/json", []string{"pending_orders"}},
 		{`{}`, "application/json", []string{"distance_km", "pending_orders"}},
 		{`{"distance_km": -1, "pending_orders": "x"}`, "application/json", []string{"distance_km", "pending_orders"}},
-		{`{"distance_km": "inf", "pending_orders": 0}`, "application/json", []string{"distance_km"}},      // 무한대 문자열
-		{`{"distance_km": "Infinity", "pending_orders": 0}`, "application/json", []string{"distance_km"}}, // 무한대 문자열
-		{`{"distance_km": "nan", "pending_orders": 0}`, "application/json", []string{"distance_km"}},      // NaN 문자열
-		{`{"distance_km": 1e309, "pending_orders": 0}`, "application/json", []string{"distance_km"}},      // float64 범위 초과
-		{`{"distance_km": 1000000.5, "pending_orders": 0}`, "application/json", []string{"distance_km"}},  // 상한 초과
-		{`{"distance_km": 1, "pending_orders": 1000001}`, "application/json", []string{"pending_orders"}},  // 상한 초과
+		{`{"distance_km": "inf", "pending_orders": 0}`, "application/json", []string{"distance_km"}},                               // 무한대 문자열
+		{`{"distance_km": "Infinity", "pending_orders": 0}`, "application/json", []string{"distance_km"}},                          // 무한대 문자열
+		{`{"distance_km": "nan", "pending_orders": 0}`, "application/json", []string{"distance_km"}},                               // NaN 문자열
+		{`{"distance_km": 1e309, "pending_orders": 0}`, "application/json", []string{"distance_km"}},                               // float64 범위 초과
+		{`{"distance_km": 1000000.5, "pending_orders": 0}`, "application/json", []string{"distance_km"}},                           // 상한 초과
+		{`{"distance_km": 1, "pending_orders": 1000001}`, "application/json", []string{"pending_orders"}},                          // 상한 초과
 		{`{"distance_km": 1, "pending_orders": ` + strings.Repeat("9", 400) + `}`, "application/json", []string{"pending_orders"}}, // int64 범위 초과
-		{`{"distance_km": 1, "pending_orders": 0} {}`, "application/json", []string{"0"}}, // JSON 값 뒤에 다른 값
+		{`{"distance_km": 1, "pending_orders": 0} {}`, "application/json", []string{"0"}},                                          // JSON 값 뒤에 다른 값
 		{`not json`, "application/json", []string{"0"}},
 		{`[1, 2]`, "application/json", []string{""}},
 		{`{"distance_km": 1, "pending_orders": 0}`, "", []string{""}}, // Content-Type 없음
@@ -110,6 +110,32 @@ func TestEtaInvalidReturns422(t *testing.T) {
 		}
 		if rec.Code != 422 || strings.Join(locs, ",") != strings.Join(c.wantLoc, ",") {
 			t.Errorf("%q: got %d %s, want 422 with loc %v", c.body, rec.Code, rec.Body, c.wantLoc)
+		}
+	}
+}
+
+// TestEta422TypeMatchesPydantic: 범위 밖 값은 api/app.py(pydantic) 와 같은 type·input 으로 거부한다.
+func TestEta422TypeMatchesPydantic(t *testing.T) {
+	cases := []struct {
+		body, wantType, wantInput string
+	}{
+		{`{"distance_km": 1e309, "pending_orders": 0}`, "finite_number", `"inf"`},
+		{`{"distance_km": -1e309, "pending_orders": 0}`, "finite_number", `"-inf"`},
+		{`{"distance_km": "nan", "pending_orders": 0}`, "finite_number", `"nan"`},
+		{`{"distance_km": 1, "pending_orders": "99999999999999999999"}`, "less_than_equal", `"99999999999999999999"`},
+		{`{"distance_km": 1, "pending_orders": "-99999999999999999999"}`, "greater_than_equal", `"-99999999999999999999"`},
+	}
+	for _, c := range cases {
+		rec := post(t, c.body, "application/json")
+		var got struct {
+			Detail []struct {
+				Type  string          `json:"type"`
+				Input json.RawMessage `json:"input"`
+			} `json:"detail"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if rec.Code != 422 || len(got.Detail) != 1 || got.Detail[0].Type != c.wantType || string(got.Detail[0].Input) != c.wantInput {
+			t.Errorf("%s: got %d %s, want 422 %s input=%s", c.body, rec.Code, rec.Body, c.wantType, c.wantInput)
 		}
 	}
 }
