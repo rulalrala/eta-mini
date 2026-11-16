@@ -1,3 +1,16 @@
+# 빌드 컨텍스트는 저장소 루트다. 이미지에 쓰지 않는 것은 Docker 로 보내지 않는다.
+.git
+.github
+.vscode
 .venv
 **/__pycache__
 .DS_Store
+.env
+# Rust 로컬 빌드 결과 (수백 MB 가 될 수 있다)
+api-rust/target
+# 테스트·학습 코드는 실행 이미지에 필요 없다
+api/tests
+training
+# artifacts 중 Go/Rust 이미지가 쓰는 ONNX 모델만 보낸다
+artifacts/*
+!artifacts/model_sklearn.onnx

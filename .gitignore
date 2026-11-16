@@ -1,7 +1,7 @@
 __pycache__
 .venv
-.DS_store
-node_moduless
+.DS_Store
+node_modules
 *.sqlite*
 artifacts
 .env
