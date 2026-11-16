@@ -1,0 +1,21 @@
+[package]
+name = "eta-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "eta-api"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+# ONNX Runtime 공유 라이브러리는 실행할 때 불러온다 (load-dynamic). 버전은 Dockerfile 이 uv.lock 에서 정한다.
+# 2.0 정식 전(rc)이라 버전 사이 API 가 바뀌므로 정확히 고정한다.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
