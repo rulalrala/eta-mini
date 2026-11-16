@@ -2,6 +2,8 @@ import math
 
 import pytest
 
+from api.app import MAX_DISTANCE_KM, MAX_PENDING_ORDERS, load_predictor
+
 
 # ---------- / (루트 소개 페이지) ----------
 
@@ -99,12 +101,12 @@ def test_eta_zero_inputs(client):
 
 
 def test_eta_large_inputs(client):
-    """아주 큰 값도 200 과 유한한 예상 시간을 돌려준다."""
-    res = client.post("/eta", json={"distance_km": 1_000_000.0, "pending_orders": 100_000})
+    """상한값(거리 1,000,000km, 주문 1,000,000건)은 허용되며 200 과 유한한 예상 시간을 돌려준다."""
+    res = client.post("/eta", json={"distance_km": MAX_DISTANCE_KM, "pending_orders": MAX_PENDING_ORDERS})
     assert res.status_code == 200
     minutes = res.json()["minutes"]
     assert math.isfinite(minutes)
-    assert minutes == pytest.approx(10 + 3 * 1_000_000 + 2 * 100_000, abs=1e-6)
+    assert minutes == pytest.approx(10 + 3 * 1_000_000 + 2 * 1_000_000, abs=1e-6)
 
 
 def test_eta_increases_with_inputs(client):
@@ -128,6 +130,12 @@ def test_eta_increases_with_inputs(client):
         {"distance_km": 1.0, "pending_orders": "many"}, # 숫자가 아닌 주문 수
         {"distance_km": 1.0, "pending_orders": 1.5},    # 정수가 아닌 주문 수
         {"distance_km": None, "pending_orders": 0},     # null
+        {"distance_km": "inf", "pending_orders": 0},    # 무한대 문자열
+        {"distance_km": "Infinity", "pending_orders": 0},  # 무한대 문자열
+        {"distance_km": "nan", "pending_orders": 0},    # NaN 문자열
+        {"distance_km": 1_000_000.5, "pending_orders": 0},  # 거리 상한 바로 위
+        {"distance_km": 1.0, "pending_orders": 1_000_001},  # 주문 수 상한 바로 위
+        {"distance_km": 1.0, "pending_orders": 10**400},    # 아주 큰 정수 (이전에는 500)
         {"pending_orders": 0},                          # 거리 누락
         {"distance_km": 1.0},                           # 주문 수 누락
         {},                                             # 빈 본문
@@ -147,6 +155,8 @@ def test_eta_invalid_input_returns_422(client, payload):
         ({"distance_km": "far", "pending_orders": 0}, "distance_km"),
         ({"pending_orders": 0}, "distance_km"),
         ({"distance_km": 1.0}, "pending_orders"),
+        ({"distance_km": "inf", "pending_orders": 0}, "distance_km"),
+        ({"distance_km": 1.0, "pending_orders": 10**400}, "pending_orders"),
     ],
 )
 def test_eta_422_points_to_bad_field(client, payload, bad_field):
@@ -155,6 +165,21 @@ def test_eta_422_points_to_bad_field(client, payload, bad_field):
     assert res.status_code == 422
     fields = {err["loc"][-1] for err in res.json()["detail"]}
     assert fields == {bad_field}
+
+
+@pytest.mark.parametrize("value", ["inf", "-inf", "Infinity", "nan"])
+def test_eta_non_finite_distance_error_type(client, value):
+    """무한대·NaN 거리는 422 이고 오류 type 이 finite_number 다 (Go·Rust 구현이 따르는 계약)."""
+    res = client.post("/eta", json={"distance_km": value, "pending_orders": 0})
+    assert res.status_code == 422
+    assert [err["type"] for err in res.json()["detail"]] == ["finite_number"]
+
+
+def test_eta_overflowing_number_returns_422(client):
+    """float 범위를 넘는 숫자(1e309 → 무한대)는 minutes=null 대신 422 로 거부한다."""
+    res = client.post("/eta", content='{"distance_km": 1e309, "pending_orders": 0}',
+                      headers={"Content-Type": "application/json"})
+    assert res.status_code == 422
 
 
 def test_eta_non_json_body_returns_422(client):
@@ -167,3 +192,17 @@ def test_eta_get_method_not_allowed(client):
     """/eta 는 POST 전용이며 GET 은 405 를 돌려준다."""
     res = client.get("/eta")
     assert res.status_code == 405
+
+
+# ---------- MODEL_IMPL ----------
+
+@pytest.mark.parametrize("name", ["nope", "paths", "../rule", ""])
+def test_unknown_model_impl_is_rejected(name):
+    """목록에 없는 MODEL_IMPL 은 모듈을 import 하지 않고 바로 RuntimeError 로 거부한다."""
+    with pytest.raises(RuntimeError, match="MODEL_IMPL"):
+        load_predictor(name)
+
+
+def test_known_model_impl_loads():
+    """rule 구현체는 estimate_delivery_minutes 를 가진 모듈로 불러와진다."""
+    assert callable(load_predictor("rule").estimate_delivery_minutes)

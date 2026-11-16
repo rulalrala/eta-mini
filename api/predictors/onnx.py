@@ -1,8 +1,15 @@
-import os
+from functools import cache
 import numpy as np
 import onnxruntime as ort
+from api.predictors.paths import model_path
 
-_session = ort.InferenceSession(os.path.join(os.getenv("MODEL_DIR", "artifacts"), "model_sklearn.onnx"))
+@cache
+def load_model() -> ort.InferenceSession:
+    """처음 호출될 때 한 번만 모델 파일을 읽는다. 서버는 시작할 때(lifespan) 미리 호출한다.
+    Returns:
+        model_sklearn.onnx 를 불러온 ONNX Runtime 세션.
+    """
+    return ort.InferenceSession(model_path("model_sklearn.onnx"))
 
 def estimate_delivery_minutes(distance_km: float, pending_orders: int) -> float:
     """ONNX 로 변환한 모델로 배달 예상 시간(분)을 계산한다.
@@ -14,4 +21,4 @@ def estimate_delivery_minutes(distance_km: float, pending_orders: int) -> float:
         예상 시간(분).
     """
     x = np.array([[distance_km, pending_orders]], dtype=np.float32)
-    return float(_session.run(["variable"], {"X": x})[0][0, 0])
+    return float(load_model().run(["variable"], {"X": x})[0][0, 0])

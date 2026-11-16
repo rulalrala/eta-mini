@@ -1,25 +1,79 @@
 import importlib
+import math
 import os
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from types import ModuleType
+from typing import Any
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+# MODEL_IMPL 로 고를 수 있는 구현체 (api/predictors/<이름>.py)
+MODEL_IMPLS = ("rule", "sklearn", "dl", "onnx")
+# 입력 상한. 이보다 크면 422. 상한이 없으면 inf·아주 큰 정수가 들어와 minutes=null 이나 500 이 난다.
+MAX_DISTANCE_KM = 1_000_000
+MAX_PENDING_ORDERS = 1_000_000
+
+
+def load_predictor(name: str) -> ModuleType:
+    """이름에 맞는 예측 구현체 모듈을 불러온다. 목록에 없는 이름이면 바로 실패한다."""
+    if name not in MODEL_IMPLS:
+        raise RuntimeError(f"알 수 없는 MODEL_IMPL={name!r} (가능한 값: {', '.join(MODEL_IMPLS)})")
+    return importlib.import_module(f"api.predictors.{name}")
+
+
 MODEL_IMPL = os.getenv("MODEL_IMPL", "rule")
-estimate_delivery_minutes = importlib.import_module(f"api.predictors.{MODEL_IMPL}").estimate_delivery_minutes
+_predictor = load_predictor(MODEL_IMPL)
+estimate_delivery_minutes = _predictor.estimate_delivery_minutes
 
 class EtaRequest(BaseModel):
     """배달 예상 시간 요청"""
     # 모델이 더 많은 정보를 원하면 여기에 필드를 추가
-    # 아래 ge=0 와 같은 조건들을 유효성 검사하여, 잘못된 데이터(음수 등)가 들어오는 것을 사전에 방지
-    distance_km: float = Field(ge=0, description="가게에서 배달지까지 거리(km)")
-    pending_orders: int = Field(ge=0, description="지금 밀려 있는 주문 수")
+    # 아래 ge/le 같은 조건들을 유효성 검사하여, 잘못된 데이터(음수, 무한대 등)가 들어오는 것을 사전에 방지
+    distance_km: float = Field(ge=0, le=MAX_DISTANCE_KM, allow_inf_nan=False,
+                               description="가게에서 배달지까지 거리(km)")
+    pending_orders: int = Field(ge=0, le=MAX_PENDING_ORDERS, description="지금 밀려 있는 주문 수")
 
 class EtaResponse(BaseModel):
     """배달 예상 시간 응답"""
     minutes: float
     model: str  # 어떤 구현체가 낸 예측인지 (장애 추적용)
 
-app = FastAPI(title="delivery-eta")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """서버가 뜰 때 모델을 미리 읽는다.
+    모델 파일이 없으면 /health 가 ok 를 돌려주는 대신 서버 시작이 실패한다. 첫 요청도 느려지지 않는다.
+    """
+    load_model = getattr(_predictor, "load_model", None)  # rule 은 모델이 없다
+    if load_model is not None:
+        load_model()
+    yield
+
+
+app = FastAPI(title="delivery-eta", lifespan=lifespan)
+
+
+def _finite_only(value: Any) -> Any:
+    """JSON 으로 보낼 수 없는 inf/nan 을 문자열("inf")로 바꾼다."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _finite_only(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_only(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI 기본 422 응답과 같은 형식. 다만 1e309 처럼 inf 가 된 입력을 detail.input 에 그대로 넣으면
+    JSON 직렬화에 실패해 500 이 되므로, inf/nan 은 문자열로 바꿔 돌려준다.
+    """
+    return JSONResponse(status_code=422, content={"detail": _finite_only(jsonable_encoder(exc.errors()))})
 
 
 def get_intro_html(model_name: str) -> str:
@@ -220,10 +274,14 @@ def get_intro_html(model_name: str) -> str:
 </html>"""
 
 
+# MODEL_IMPL 은 실행 중에 바뀌지 않으므로 소개 페이지는 한 번만 만든다
+INTRO_HTML = get_intro_html(MODEL_IMPL)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     """API 소개 페이지(HTML)를 돌려준다."""
-    return get_intro_html(MODEL_IMPL)
+    return INTRO_HTML
 
 @app.get("/health")
 def health() -> dict[str, str]:

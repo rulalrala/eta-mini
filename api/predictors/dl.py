@@ -1,8 +1,8 @@
-import os
 from collections.abc import Sequence
 from functools import cache
 import torch
 from torch import nn
+from api.predictors.paths import model_path
 
 class WithNormalize(nn.Module):
     """정규화를 모델의 일부로 포함시키는 래퍼.
@@ -48,8 +48,8 @@ def load_model() -> WithNormalize:
         가중치를 불러와 eval 모드로 둔 모델.
     """
     model = build_model()
-    path = os.path.join(os.getenv("MODEL_DIR", "artifacts"), "dl.pt")
-    model.load_state_dict(torch.load(path))
+    # GPU 에서 학습해 저장한 파일이어도 CPU 서버에서 읽히도록 map_location 을 준다
+    model.load_state_dict(torch.load(model_path("dl.pt"), map_location="cpu"))
     model.eval()
     return model
 
@@ -61,7 +61,7 @@ def estimate_delivery_minutes(distance_km: float, pending_orders: int) -> float:
     Returns:
         예상 시간(분).
     """
-    with torch.no_grad():
+    with torch.inference_mode():  # no_grad 보다 추적을 더 끈다 (추론 전용)
         x = torch.tensor([[distance_km, pending_orders]], dtype=torch.float32)
         return float(load_model()(x)[0, 0])
 

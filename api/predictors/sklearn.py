@@ -1,15 +1,15 @@
-import os
 from functools import cache
 import joblib
 import numpy as np
+from api.predictors.paths import model_path
 
 @cache
 def load_model():
-    """처음 호출될 때 한 번만 모델 파일을 읽는다 (지연 로딩).
+    """처음 호출될 때 한 번만 모델 파일을 읽는다. 서버는 시작할 때(lifespan) 미리 호출한다.
     Returns:
         학습 스크립트가 저장한 scikit-learn 파이프라인 (StandardScaler → LinearRegression).
     """
-    return joblib.load(os.path.join(os.getenv("MODEL_DIR", "artifacts"), "sklearn.joblib"))
+    return joblib.load(model_path("sklearn.joblib"))
 
 def estimate_delivery_minutes(distance_km: float, pending_orders: int) -> float:
     """학습된 scikit-learn 모델(원본)로 배달 예상 시간(분)을 계산한다.
